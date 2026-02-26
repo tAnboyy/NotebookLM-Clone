@@ -1,6 +1,3 @@
-
-import gradio as gr
-
 import os
 import secrets
 import urllib.parse
@@ -8,15 +5,6 @@ import urllib.parse
 import requests
 import streamlit as st
 
-
-def greet(name):
-    return "Hello " + name + "!!. Testing Hugging Face deployment!"
-
-demo = gr.Interface(fn=greet, inputs="text", outputs="text")
-demo.launch()
-
-
-HF_LOGIN_PAGE = "https://huggingface.co/login"
 HF_AUTH_URL = "https://huggingface.co/oauth/authorize"
 HF_TOKEN_URL = "https://huggingface.co/oauth/token"
 HF_SCOPE = "read:org"  # request the minimum scope needed for metadata
@@ -26,6 +14,25 @@ HF_CLIENT_SECRET = os.environ.get("HF_OAUTH_CLIENT_SECRET")
 HF_REDIRECT_URI = os.environ.get("HF_OAUTH_REDIRECT_URI", "http://localhost:8501/")
 
 st.set_page_config(page_title="Login to Hugging Face", page_icon="📓", layout="centered")
+if not (HF_CLIENT_ID and HF_CLIENT_SECRET):
+    st.warning(
+        "Set HF_OAUTH_CLIENT_ID and HF_OAUTH_CLIENT_SECRET in the environment before running this app."
+    )
+    st.stop()
+if "hf_oauth_state" not in st.session_state:
+    st.session_state["hf_oauth_state"] = secrets.token_urlsafe(16)
+
+state = st.session_state["hf_oauth_state"]
+params = {
+    "client_id": HF_CLIENT_ID,
+    "response_type": "code",
+    "scope": HF_SCOPE,
+    "redirect_uri": HF_REDIRECT_URI,
+    "state": state,
+}
+
+auth_url = f"{HF_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
 st.markdown(
     """
     <style>
@@ -70,7 +77,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    """
+    f"""
     <div class="hf-panel">
         <div class="hf-note">
             Sign in to Hugging Face, then authorize the NotebookLM experience.
@@ -84,25 +91,24 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if not (HF_CLIENT_ID and HF_CLIENT_SECRET):
-    st.warning(
-        "Set HF_OAUTH_CLIENT_ID and HF_OAUTH_CLIENT_SECRET in the environment before running this app."
-    )
-    st.stop()
+st.markdown("#### User details")
+user_id = st.text_input("User ID", placeholder="Enter your user ID", key="user_id")
 
-if "hf_oauth_state" not in st.session_state:
-    st.session_state["hf_oauth_state"] = secrets.token_urlsafe(16)
+st.markdown("#### Upload documents")
+uploaded_files = st.file_uploader(
+    "Choose PDF/TXT files",
+    type=["pdf", "txt", "docx"],
+    accept_multiple_files=True,
+    key="uploaded_docs",
+)
 
-state = st.session_state["hf_oauth_state"]
-params = {
-    "client_id": HF_CLIENT_ID,
-    "response_type": "code",
-    "scope": HF_SCOPE,
-    "redirect_uri": HF_REDIRECT_URI,
-    "state": state,
-}
+st.markdown("#### Topic")
+topic = st.text_input("Topic", placeholder="Enter a topic for the session", key="topic")
 
-auth_url = f"{HF_AUTH_URL}?{urllib.parse.urlencode(params)}"
+generate_disabled = not (user_id and topic and uploaded_files)
+if st.button("Generate", disabled=generate_disabled):
+    st.success(f"Queuing generation for {topic} as {user_id}. Uploaded {len(uploaded_files)} document(s).")
+
 
 st.markdown(
     "Use this OAuth link to grant the app access to Hugging Face. After consenting, you will be redirected back to the redirect URI with a `code` parameter."
@@ -138,5 +144,10 @@ if "hf_session" in st.session_state:
     st.subheader("Authenticated session")
     st.json(st.session_state["hf_session"])
 
-st.caption("Tokens are stored only in the Streamlit session. For production, persist tokens in encrypted storage and rotate them regularly.")
+    if st.button("Sign out"):
+        for key in ["hf_session", "hf_oauth_code", "hf_oauth_state"]:
+            st.session_state.pop(key, None)
+        st.success("You have been signed out.")
+        st.experimental_rerun()
 
+st.caption("Tokens are stored only in the Streamlit session. For production, persist tokens in encrypted storage and rotate them regularly.")
