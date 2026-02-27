@@ -5,6 +5,14 @@ import urllib.parse
 import requests
 import streamlit as st
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
 HF_AUTH_URL = "https://huggingface.co/oauth/authorize"
 HF_TOKEN_URL = "https://huggingface.co/oauth/token"
 HF_SCOPE = "read:org"  # request the minimum scope needed for metadata
