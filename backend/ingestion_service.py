@@ -71,7 +71,7 @@ def ingest_pdf_chunks(notebook_id: str, source_id: str, pdf_path: Path) -> int:
 
 def _extract_url_text(url: str) -> str:
     headers = {
-        "User-Agent": "NotebookLM-Clone/1.0 (course project; contact: youremail@example.com)",
+        "User-Agent": "NotebookLM-Clone/1.0 (course project; contact: mgohn@charlotte.edu)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
