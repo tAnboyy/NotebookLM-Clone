@@ -3,4 +3,6 @@ huggingface_hub==0.24.7
 supabase>=2.0.0
 python-dotenv>=1.0.0
 realtime==2.3.0
+chardet>=5.0.0
+sentence-transformers>=2.0.0
 pypdf>=4.2.0

@@ -46,3 +46,21 @@ create table if not exists chunks (
 create index if not exists idx_chunks_notebook_id on chunks(notebook_id);
 -- Vector index (run after you have data; ivfflat requires rows):
 -- create index idx_chunks_embedding on chunks using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+
+-- sources table (ingestion pipeline)
+create table if not exists sources (
+    id uuid primary key default gen_random_uuid(),
+    notebook_id uuid not null references notebooks(id) on delete cascade,
+    user_id text not null,
+    filename text not null,
+    file_type text not null,
+    status text not null default 'PENDING',
+    storage_path text,
+    extracted_text text,
+    metadata jsonb default '{}',
+    created_at timestamptz default now(),
+    updated_at timestamptz default now()
+);
+create index if not exists idx_sources_notebook_id on sources(notebook_id);
+create index if not exists idx_sources_user_id on sources(user_id);
+create index if not exists idx_sources_status on sources(status);
