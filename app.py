@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+from datetime import datetime
 import gradio as gr
 
 from backend.notebook_service import create_notebook, list_notebooks, rename_notebook, delete_notebook
@@ -147,6 +148,70 @@ def _build_row_updates(notebooks):
         out.append(gr.update(value=name, visible=visible))
     return out
 
+# ── Upload Handler Functions ──────────────────────────────────
+def _do_upload(text_content, title, notebook_id, profile: gr.OAuthProfile | None):
+    """Handle direct text input and ingestion."""
+    from backend.ingestion_txt import ingest_txt, list_sources
+
+    user_id = _user_id(profile)
+
+    if not user_id:
+        return "❌ Please sign in first.", ""
+    if not notebook_id:
+        return "❌ Please select a notebook first.", ""
+    if not text_content or not text_content.strip():
+        return "❌ No text entered.", ""
+
+    try:
+        # Use title as filename, fallback to timestamp
+        filename = (title or "").strip()
+        if not filename:
+            filename = f"text_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        if not filename.endswith(".txt"):
+            filename = filename + ".txt"
+
+        # Convert text to bytes for ingestion pipeline
+        file_bytes = text_content.encode("utf-8")
+
+        result = ingest_txt(
+            file_bytes=file_bytes,
+            filename=filename,
+            notebook_id=notebook_id,
+            user_id=user_id
+        )
+
+        meta = result["metadata"]
+        status_msg = (
+            f"✅ **{result['filename']}** saved successfully!\n\n"
+            f"- Size: {meta['size_bytes'] / 1024:.1f} KB"
+        )
+
+        #sources = list_sources(notebook_id)
+        return status_msg, ""
+
+    except ValueError as e:
+        return f"❌ {str(e)}", ""
+    except Exception as e:
+        return f"❌ Unexpected error: {str(e)}", ""
+
+def _format_sources(sources: list[dict]) -> str:
+    if not sources:
+        return "No sources yet."
+    lines = ["| Filename | Type | Status | Words |",
+             "|----------|------|--------|-------|"]
+    for s in sources:
+        meta = s.get("metadata") or {}
+        words = meta.get("word_count", "—")
+        lines.append(f"| {s['filename']} | {s['file_type']} | {s['status']} | {words} |")
+    return "\n".join(lines)
+
+
+def _load_sources(notebook_id, profile: gr.OAuthProfile | None):
+    from backend.ingestion_txt import list_sources
+    if not notebook_id:
+        return ""
+    sources = list_sources(notebook_id)
+    return _format_sources(sources)
 
 with gr.Blocks(
     title="NotebookLM Clone - Notebooks",
@@ -228,5 +293,40 @@ with gr.Blocks(
             inputs=[gr.State(i), nb_state],
             outputs=[selected_notebook_id],
         ).then(_on_select, None, [status])
+
+    # ── Text Input Section ────────────────────────────────────
+    gr.Markdown("---")
+    gr.Markdown("## Add Text")
+    gr.Markdown("Select a notebook above, then paste or type your text.")
+
+    with gr.Row():
+        txt_title = gr.Textbox(
+            label="Title",
+            placeholder="Give this text a name (e.g. 'Lecture Notes Week 1')",
+            scale=1,
+        )
+
+    txt_input = gr.Textbox(
+        label="Text Content",
+        placeholder="Paste or type your text here...",
+        lines=10,
+    )
+
+    submit_btn = gr.Button("Save & Process", variant="primary")
+
+    upload_status = gr.Markdown("", elem_classes=["status"])
+    sources_display = gr.Markdown("")
+
+    submit_btn.click(
+        _do_upload,
+        inputs=[txt_input, txt_title, selected_notebook_id],
+        outputs=[upload_status, sources_display],
+    )
+
+    selected_notebook_id.change(
+        _load_sources,
+        inputs=[selected_notebook_id],
+        outputs=[sources_display],
+    )
 
 demo.launch()
