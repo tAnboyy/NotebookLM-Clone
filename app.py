@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 
 from dotenv import load_dotenv
 
@@ -7,8 +8,29 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import gradio as gr
+import gradio_client.utils as gradio_client_utils
 
+from backend.ingestion_service import ingest_pdf_chunks, remove_chunks_for_source
 from backend.notebook_service import create_notebook, list_notebooks, rename_notebook, delete_notebook
+
+_original_gradio_get_type = gradio_client_utils.get_type
+_original_json_schema_to_python_type = gradio_client_utils._json_schema_to_python_type
+
+
+def _patched_gradio_get_type(schema):
+    if isinstance(schema, bool):
+        return "Any"
+    return _original_gradio_get_type(schema)
+
+
+def _patched_json_schema_to_python_type(schema, defs=None):
+    if isinstance(schema, bool):
+        return "Any"
+    return _original_json_schema_to_python_type(schema, defs)
+
+
+gradio_client_utils.get_type = _patched_gradio_get_type
+gradio_client_utils._json_schema_to_python_type = _patched_json_schema_to_python_type
 
 # Theme: adapts to light/dark mode
 theme = gr.themes.Soft(
@@ -137,6 +159,99 @@ def _initial_load(profile: gr.OAuthProfile | None):
     return state, selected, status, *updates
 
 
+def _safe_upload_pdfs(files, selected_id, profile: gr.OAuthProfile | None):
+    """Upload PDF files for the selected notebook."""
+    try:
+        user_id = _user_id(profile)
+        if not user_id:
+            return "Please sign in with Hugging Face before uploading PDFs."
+        if not selected_id:
+            return "Select a notebook first, then upload PDFs."
+        if not files:
+            return "Choose at least one PDF to upload."
+
+        if isinstance(files, str):
+            file_paths = [files]
+        else:
+            file_paths = []
+            for file_item in files:
+                file_path = getattr(file_item, "name", file_item)
+                if file_path:
+                    file_paths.append(file_path)
+
+        if not file_paths:
+            return "No files were received. Try uploading again."
+
+        target_dir = Path("data") / "uploads" / user_id / str(selected_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        uploaded = []
+        total_chunks = 0
+        for file_path in file_paths:
+            source_path = Path(file_path)
+            if source_path.suffix.lower() != ".pdf":
+                continue
+
+            destination = target_dir / source_path.name
+            if destination.exists():
+                index = 1
+                while True:
+                    candidate = target_dir / f"{source_path.stem}_{index}{source_path.suffix}"
+                    if not candidate.exists():
+                        destination = candidate
+                        break
+                    index += 1
+
+            shutil.copy2(source_path, destination)
+            uploaded.append(destination.name)
+            total_chunks += ingest_pdf_chunks(str(selected_id), destination.name, destination)
+
+        if not uploaded:
+            return "Only .pdf files are allowed."
+
+        return f"Uploaded {len(uploaded)} PDF(s): {', '.join(uploaded)}. Indexed {total_chunks} chunk(s) for RAG."
+    except Exception as error:
+        return f"Error uploading PDFs: {error}"
+
+
+def _list_uploaded_pdfs(selected_id, profile: gr.OAuthProfile | None):
+    """List uploaded PDFs for the selected notebook."""
+    user_id = _user_id(profile)
+    if not user_id or not selected_id:
+        return gr.update(choices=[], value=None)
+
+    target_dir = Path("data") / "uploads" / user_id / str(selected_id)
+    if not target_dir.exists():
+        return gr.update(choices=[], value=None)
+
+    pdf_names = sorted([path.name for path in target_dir.glob("*.pdf")])
+    selected_name = pdf_names[0] if pdf_names else None
+    return gr.update(choices=pdf_names, value=selected_name)
+
+
+def _safe_remove_pdf(file_name, selected_id, profile: gr.OAuthProfile | None):
+    """Remove one uploaded PDF from the selected notebook."""
+    try:
+        user_id = _user_id(profile)
+        if not user_id:
+            return "Please sign in with Hugging Face before removing PDFs."
+        if not selected_id:
+            return "Select a notebook first."
+        if not file_name:
+            return "Select a PDF to remove."
+
+        safe_name = Path(file_name).name
+        target_file = Path("data") / "uploads" / user_id / str(selected_id) / safe_name
+        if not target_file.exists() or target_file.suffix.lower() != ".pdf":
+            return "Selected PDF was not found."
+
+        target_file.unlink()
+        remove_chunks_for_source(str(selected_id), safe_name)
+        return f"Removed PDF: {safe_name}"
+    except Exception as error:
+        return f"Error removing PDF: {error}"
+
+
 def _build_row_updates(notebooks):
     """Return gr.update values for each row: visibility, then text value."""
     out = []
@@ -173,6 +288,25 @@ with gr.Blocks(
         )
         create_btn = gr.Button("Create", variant="primary", scale=1)
 
+    with gr.Row():
+        pdf_upload_btn = gr.UploadButton(
+            "Upload PDFs",
+            file_types=[".pdf"],
+            file_count="multiple",
+            type="filepath",
+            variant="secondary",
+        )
+
+    with gr.Row():
+        uploaded_pdf_dd = gr.Dropdown(
+            label="Uploaded PDFs",
+            choices=[],
+            value=None,
+            scale=3,
+            allow_custom_value=False,
+        )
+        remove_pdf_btn = gr.Button("Remove selected PDF", variant="stop", scale=1)
+
     gr.Markdown("---")
     gr.Markdown("**Your notebooks** (selected notebook used for chat/ingestion)")
 
@@ -195,14 +329,30 @@ with gr.Blocks(
 
     status = gr.Markdown("Sign in with Hugging Face to manage notebooks.", elem_classes=["status"])
 
-    demo.load(_initial_load, inputs=None, outputs=[nb_state, selected_notebook_id, status] + row_outputs)
+    demo.load(_initial_load, inputs=None, outputs=[nb_state, selected_notebook_id, status] + row_outputs, api_name=False)
+    demo.load(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd], api_name=False)
 
     # Create button
     create_btn.click(
         _safe_create,
         inputs=[create_txt, nb_state, selected_notebook_id],
         outputs=[create_txt, nb_state, selected_notebook_id, status] + row_outputs,
-    )
+        api_name=False,
+    ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
+
+    pdf_upload_btn.upload(
+        _safe_upload_pdfs,
+        inputs=[pdf_upload_btn, selected_notebook_id],
+        outputs=[status],
+        api_name=False,
+    ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
+
+    remove_pdf_btn.click(
+        _safe_remove_pdf,
+        inputs=[uploaded_pdf_dd, selected_notebook_id],
+        outputs=[status],
+        api_name=False,
+    ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
 
     # Per-row: Rename, Delete, Select (profile injected by Gradio for OAuth)
     for i in range(MAX_NOTEBOOKS):
@@ -215,18 +365,21 @@ with gr.Blocks(
             _safe_rename,
             inputs=[gr.State(i), name_txt, nb_state, selected_notebook_id],
             outputs=[nb_state, selected_notebook_id, status] + row_outputs,
+            api_name=False,
         )
         delete_btn.click(
             _safe_delete,
             inputs=[gr.State(i), nb_state, selected_notebook_id],
             outputs=[nb_state, selected_notebook_id, status] + row_outputs,
-        )
+            api_name=False,
+        ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
         def _on_select():
             return "Selected notebook updated. Use this for chat/ingestion."
         select_btn.click(
             _select_notebook,
             inputs=[gr.State(i), nb_state],
             outputs=[selected_notebook_id],
-        ).then(_on_select, None, [status])
+            api_name=False,
+        ).then(_on_select, None, [status]).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
 
-demo.launch()
+demo.launch(show_api=False)
