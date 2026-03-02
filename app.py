@@ -11,8 +11,10 @@ from datetime import datetime
 import gradio as gr
 import gradio_client.utils as gradio_client_utils
 
-from backend.ingestion_service import ingest_pdf_chunks, remove_chunks_for_source
+from backend.ingestion_service import ingest_pdf_chunks, ingest_url_chunks, remove_chunks_for_source
 from backend.notebook_service import create_notebook, list_notebooks, rename_notebook, delete_notebook
+
+import hashlib
 
 _original_gradio_get_type = gradio_client_utils.get_type
 _original_json_schema_to_python_type = gradio_client_utils._json_schema_to_python_type
@@ -251,6 +253,61 @@ def _safe_remove_pdf(file_name, selected_id, profile: gr.OAuthProfile | None):
         return f"Removed PDF: {safe_name}"
     except Exception as error:
         return f"Error removing PDF: {error}"
+    
+def _url_source_id(url: str) -> str:
+    """Stable source_id so re-ingesting the same URL overwrites old chunks."""
+    h = hashlib.sha256(url.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return f"url_{h}"
+
+
+def _safe_ingest_url(url, selected_id, profile: gr.OAuthProfile | None):
+    """Ingest one URL into chunks table for the selected notebook."""
+    try:
+        user_id = _user_id(profile)
+        if not user_id:
+            return "", "Please sign in with Hugging Face before ingesting a URL."
+        if not selected_id:
+            return "", "Select a notebook first, then ingest a URL."
+
+        cleaned = (url or "").strip()
+        if not cleaned:
+            return "", "Enter a URL."
+        if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+            return "", "URL must start with http:// or https://"
+
+        source_id = _url_source_id(cleaned)
+        chunk_count = ingest_url_chunks(str(selected_id), source_id, cleaned)
+
+        if chunk_count == 0:
+            return "", (
+                "Ingested URL but extracted 0 chunks. Page may be JS-rendered/blocked/non-text. "
+                "Try a simpler static page (example.com / Wikipedia)."
+            )
+
+        return "", f"Ingested URL. Indexed {chunk_count} chunk(s). Source: {cleaned}"
+    except Exception as error:
+        return "", f"Error ingesting URL: {error}"
+    
+def _safe_remove_url(url, selected_id, profile: gr.OAuthProfile | None):
+    try:
+        user_id = _user_id(profile)
+        if not user_id:
+            return "", "Please sign in with Hugging Face before ingesting a URL."
+        if not selected_id:
+            return "", "Select a notebook first, then remove a URL."
+        
+        cleaned = (url or "").strip()
+        if not cleaned:
+            return "", "Enter a URL."
+        if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+            return "", "URL must start with http:// or https://"
+
+        source_id = _url_source_id(cleaned)
+        remove_chunks_for_source(str(selected_id), source_id)
+        return "", f"Removed URL: {cleaned}"
+    except Exception as error:
+        return "", f"Error removing URL: {error}"
+
 
 
 def _build_row_updates(notebooks):
@@ -372,6 +429,16 @@ with gr.Blocks(
         )
         remove_pdf_btn = gr.Button("Remove selected PDF", variant="stop", scale=1)
 
+    with gr.Row():
+        url_txt = gr.Textbox(
+            label="Ingest web URL",
+            placeholder="https://example.com",
+            value="",
+            scale=3,
+        )
+        ingest_url_btn = gr.Button("Ingest URL", variant="primary", scale=1)
+        remove_url_btn = gr.Button("Delete URL", variant="stop", scale=1)
+
     gr.Markdown("---")
     gr.Markdown("**Your notebooks** (selected notebook used for chat/ingestion)")
 
@@ -411,6 +478,20 @@ with gr.Blocks(
         outputs=[status],
         api_name=False,
     ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
+
+    ingest_url_btn.click(
+        _safe_ingest_url,
+        inputs=[url_txt, selected_notebook_id],
+        outputs=[url_txt, status],
+        api_name=False,
+    )
+
+    remove_url_btn.click(
+        _safe_remove_url,
+        inputs=[url_txt, selected_notebook_id],
+        outputs=[url_txt, status],
+        api_name=False
+    )
 
     remove_pdf_btn.click(
         _safe_remove_pdf,
