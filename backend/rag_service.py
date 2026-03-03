@@ -1,30 +1,14 @@
 """RAG chat service - retrieve chunks, call LLM, persist messages."""
 
-import os
 import re
 
-from openai import OpenAI
-
 from backend.chat_service import save_message, load_chat
+from backend.llm_client import DEFAULT_MODEL, get_llm_client
 from backend.retrieval_service import retrieve_chunks
 
 MAX_HISTORY_MESSAGES = 20
 # Together AI - you have recent usage. Or :groq for Groq.
-DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct:together"
 TOP_K = 5
-
-_client: OpenAI | None = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        token = os.getenv("HF_TOKEN")
-        _client = OpenAI(
-            base_url="https://router.huggingface.co/v1",
-            api_key=token,
-        )
-    return _client
 
 
 def _validate_citations(text: str, num_chunks: int) -> str:
@@ -77,7 +61,7 @@ def rag_chat(notebook_id: str, query: str, chat_history: list) -> tuple[str, lis
     messages.append({"role": "user", "content": query})
 
     try:
-        client = _get_client()
+        client = get_llm_client()
         response = client.chat.completions.create(
             model=DEFAULT_MODEL,
             messages=messages,

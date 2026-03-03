@@ -29,6 +29,7 @@ from backend.ingestion_service import ingest_pdf_chunks, ingest_url_chunks, remo
 from backend.notebook_service import create_notebook, list_notebooks, rename_notebook, delete_notebook
 from backend.chat_service import load_chat
 from backend.rag_service import rag_chat
+from backend.report_service import generate_report
 
 import hashlib
 _log("4. Imports done.")
@@ -200,6 +201,46 @@ def _initial_load(profile: gr.OAuthProfile | None):
     auth_update = f"You are logged in as {getattr(profile, 'name', None) or user_id} ({_user_id(profile)})" if user_id else ""
     auth_row_visible = bool(user_id)
     return state, selected, status, auth_update, gr.update(visible=auth_row_visible), gr.update(visible=bool(user_id)), gr.update(visible=not bool(user_id))
+
+
+REPORT_SCOPE_LABELS = {
+    "All sources (PDFs, URLs, text)": "all",
+    "PDF uploads only": "pdf",
+    "Web URLs only": "url",
+    "Uploaded text only": "text",
+}
+
+REPORT_SCOPE_DESCRIPTIONS = {
+    "all": "PDFs, URLs, and uploaded text",
+    "pdf": "uploaded PDFs",
+    "url": "ingested web URLs",
+    "text": "uploaded text files",
+}
+
+DEFAULT_REPORT_SCOPE_LABEL = "All sources (PDFs, URLs, text)"
+
+
+def _resolve_report_scope(label: str) -> tuple[str, str]:
+    value = REPORT_SCOPE_LABELS.get(label, "all")
+    desc = REPORT_SCOPE_DESCRIPTIONS.get(value, "selected sources")
+    return value, desc
+
+
+def _generate_report(scope_label, notebook_id, profile: gr.OAuthProfile | None):
+    scope_value, scope_desc = _resolve_report_scope(scope_label)
+    user_id = _user_id(profile)
+    if not user_id:
+        return "Please sign in with Hugging Face before generating a report.", ""
+    if not notebook_id:
+        return "Select a notebook first to generate a report.", ""
+    try:
+        report_text = generate_report(notebook_id, scope_value)
+        status = f"Report ready for {scope_desc}."
+        return status, report_text
+    except ValueError as error:
+        return f"⚠️ {error}", ""
+    except Exception as error:
+        return f"Error generating report: {error}", ""
 
 
 def _safe_upload_pdfs(files, selected_id, profile: gr.OAuthProfile | None):
@@ -590,6 +631,21 @@ with gr.Blocks(
             upload_status = gr.Markdown("", elem_classes=["status"])
             sources_display = gr.Markdown("")
 
+        gr.HTML("<br>")
+        with gr.Group(elem_classes=["section-card"]):
+            gr.Markdown("**Reports**", elem_classes=["section-title"])
+            gr.Markdown("*Generate a concise report based on your uploaded PDFs, ingested URLs, or added text.*")
+            with gr.Row(elem_classes=["section-row"]):
+                report_scope_dd = gr.Dropdown(
+                    label="Report scope",
+                    choices=list(REPORT_SCOPE_LABELS.keys()),
+                    value=DEFAULT_REPORT_SCOPE_LABEL,
+                    scale=3,
+                )
+                report_btn = gr.Button("Generate report", variant="primary", scale=1)
+            report_status = gr.Markdown("Select a scope and click generate.", elem_classes=["status"])
+            report_output = gr.Markdown("", elem_id="report-output")
+
         with gr.Group(elem_classes=["section-card"]):
             gr.Markdown("**Chat**", elem_classes=["section-title"])
             gr.Markdown("*Ask questions about your notebook sources. Answers are grounded in retrieved chunks with citations.*")
@@ -662,6 +718,13 @@ with gr.Blocks(
         _do_upload,
         inputs=[txt_input, txt_title, selected_notebook_id],
         outputs=[upload_status, sources_display],
+    )
+
+    report_btn.click(
+        _generate_report,
+        inputs=[report_scope_dd, selected_notebook_id],
+        outputs=[report_status, report_output],
+        api_name=False,
     )
 
     selected_notebook_id.change(
