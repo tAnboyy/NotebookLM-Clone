@@ -13,6 +13,7 @@ import gradio_client.utils as gradio_client_utils
 
 from backend.ingestion_service import ingest_pdf_chunks, ingest_url_chunks, remove_chunks_for_source
 from backend.notebook_service import create_notebook, list_notebooks, rename_notebook, delete_notebook
+from backend.podcast_service import generate_podcast, generate_podcast_audio
 
 import hashlib
 
@@ -80,7 +81,7 @@ def _get_notebooks(user_id: str | None):
     return list_notebooks(user_id)
 
 
-def _safe_create(new_name, state, selected_id, profile: gr.OAuthProfile | None):
+def _safe_create(new_name, state, selected_id, profile: gr.OAuthProfile | None = None):
     """Create notebook with name from text box."""
     try:
         user_id = _user_id(profile)
@@ -100,7 +101,7 @@ def _safe_create(new_name, state, selected_id, profile: gr.OAuthProfile | None):
         return gr.skip(), gr.skip(), gr.skip(), f"Error: {e}", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
 
 
-def _safe_rename(idx, new_name, state, selected_id, profile: gr.OAuthProfile | None):
+def _safe_rename(idx, new_name, state, selected_id, profile: gr.OAuthProfile | None = None):
     """Rename notebook at index."""
     try:
         if idx is None or idx < 0 or idx >= len(state):
@@ -123,7 +124,7 @@ def _safe_rename(idx, new_name, state, selected_id, profile: gr.OAuthProfile | N
         return gr.skip(), gr.skip(), gr.skip(), f"Error: {e}", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
 
 
-def _safe_delete(idx, state, selected_id, profile: gr.OAuthProfile | None):
+def _safe_delete(idx, state, selected_id, profile: gr.OAuthProfile | None = None):
     """Delete notebook at index."""
     try:
         if idx is None or idx < 0 or idx >= len(state):
@@ -151,7 +152,7 @@ def _select_notebook(idx, state):
     return state[idx][0]
 
 
-def _initial_load(profile: gr.OAuthProfile | None):
+def _initial_load(profile: gr.OAuthProfile | None = None):
     """Load notebooks on app load. Uses HF OAuth profile for user_id."""
     user_id = _user_id(profile)
     notebooks = _get_notebooks(user_id)
@@ -162,7 +163,7 @@ def _initial_load(profile: gr.OAuthProfile | None):
     return state, selected, status, *updates
 
 
-def _safe_upload_pdfs(files, selected_id, profile: gr.OAuthProfile | None):
+def _safe_upload_pdfs(files, selected_id, profile: gr.OAuthProfile | None = None):
     """Upload PDF files for the selected notebook."""
     try:
         user_id = _user_id(profile)
@@ -217,7 +218,7 @@ def _safe_upload_pdfs(files, selected_id, profile: gr.OAuthProfile | None):
         return f"Error uploading PDFs: {error}"
 
 
-def _list_uploaded_pdfs(selected_id, profile: gr.OAuthProfile | None):
+def _list_uploaded_pdfs(selected_id, profile: gr.OAuthProfile | None = None):
     """List uploaded PDFs for the selected notebook."""
     user_id = _user_id(profile)
     if not user_id or not selected_id:
@@ -232,7 +233,7 @@ def _list_uploaded_pdfs(selected_id, profile: gr.OAuthProfile | None):
     return gr.update(choices=pdf_names, value=selected_name)
 
 
-def _safe_remove_pdf(file_name, selected_id, profile: gr.OAuthProfile | None):
+def _safe_remove_pdf(file_name, selected_id, profile: gr.OAuthProfile | None = None):
     """Remove one uploaded PDF from the selected notebook."""
     try:
         user_id = _user_id(profile)
@@ -260,7 +261,7 @@ def _url_source_id(url: str) -> str:
     return f"url_{h}"
 
 
-def _safe_ingest_url(url, selected_id, profile: gr.OAuthProfile | None):
+def _safe_ingest_url(url, selected_id, profile: gr.OAuthProfile | None = None):
     """Ingest one URL into chunks table for the selected notebook."""
     try:
         user_id = _user_id(profile)
@@ -288,7 +289,7 @@ def _safe_ingest_url(url, selected_id, profile: gr.OAuthProfile | None):
     except Exception as error:
         return "", f"Error ingesting URL: {error}"
     
-def _safe_remove_url(url, selected_id, profile: gr.OAuthProfile | None):
+def _safe_remove_url(url, selected_id, profile: gr.OAuthProfile | None = None):
     try:
         user_id = _user_id(profile)
         if not user_id:
@@ -379,6 +380,41 @@ def _load_sources(notebook_id, profile: gr.OAuthProfile | None):
         return ""
     sources = list_sources(notebook_id)
     return _format_sources(sources)
+
+
+def _safe_generate_podcast(notebook_id, profile: gr.OAuthProfile | None = None):
+    user_id = _user_id(profile)
+    if not user_id:
+        return "Please sign in first.", ""
+    if not notebook_id:
+        return "Please select a notebook first.", ""
+
+    try:
+        result = generate_podcast(notebook_id=str(notebook_id), user_id=user_id)
+        status = (
+            f"Podcast generated. Artifact: {result['artifact_id'] or 'saved'} | "
+            f"Sources: {result['sources_count']} | Chunks: {result['chunks_used']}"
+        )
+        return status, result["script"]
+    except Exception as error:
+        return f"Error generating podcast: {error}", ""
+
+
+def _safe_generate_podcast_audio(notebook_id, script, profile: gr.OAuthProfile | None = None):
+    user_id = _user_id(profile)
+    if not user_id:
+        return "Please sign in first.", None
+    if not notebook_id:
+        return "Please select a notebook first.", None
+    if not script or not script.strip():
+        return "Generate a podcast script first.", None
+
+    try:
+        result = generate_podcast_audio(notebook_id=str(notebook_id), user_id=user_id, script=script)
+        status = f"Podcast audio generated. Artifact: {result['artifact_id'] or 'saved'}"
+        return status, result["audio_path"]
+    except Exception as error:
+        return f"Error generating podcast audio: {error}", None
 
 # Quiz Handlers 
 def _get_notebook_pdfs(notebook_id):
@@ -624,6 +660,17 @@ with gr.Blocks(
 
     upload_status = gr.Markdown("", elem_classes=["status"])
 
+    # Podcast Section
+    gr.Markdown("---")
+    gr.Markdown("## Podcast")
+    gr.Markdown("Generate a podcast script for the selected notebook using all ingested content.")
+    with gr.Row():
+        podcast_btn = gr.Button("Generate Podcast", variant="primary")
+        podcast_audio_btn = gr.Button("Generate Podcast Audio", variant="secondary")
+    podcast_status = gr.Markdown("", elem_classes=["status"])
+    podcast_script = gr.Markdown("")
+    podcast_audio = gr.Audio(label="Podcast Audio", type="filepath")
+
    # Quiz Section 
     gr.Markdown("---")
     gr.Markdown("## Generate Quiz")
@@ -659,6 +706,20 @@ with gr.Blocks(
         _do_upload,
         inputs=[txt_input, txt_title, selected_notebook_id],
         outputs=[upload_status],
+    )
+
+    podcast_btn.click(
+        _safe_generate_podcast,
+        inputs=[selected_notebook_id],
+        outputs=[podcast_status, podcast_script],
+        api_name=False,
+    )
+
+    podcast_audio_btn.click(
+        _safe_generate_podcast_audio,
+        inputs=[selected_notebook_id, podcast_script],
+        outputs=[podcast_status, podcast_audio],
+        api_name=False,
     )
 
     quiz_source_type.change(
