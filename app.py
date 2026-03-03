@@ -765,35 +765,7 @@ with gr.Blocks(
         api_name=False,
     ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
 
-    # Per-row: Rename, Delete, Select (profile injected by Gradio for OAuth)
-    for i in range(MAX_NOTEBOOKS):
-        rename_btn = row_components[i]["rename"]
-        delete_btn = row_components[i]["delete"]
-        select_btn = row_components[i]["select"]
-        name_txt = row_components[i]["name"]
 
-        rename_btn.click(
-            _safe_rename,
-            inputs=[gr.State(i), name_txt, nb_state, selected_notebook_id],
-            outputs=[nb_state, selected_notebook_id, status] + row_outputs,
-            api_name=False,
-        )
-        delete_btn.click(
-            _safe_delete,
-            inputs=[gr.State(i), nb_state, selected_notebook_id],
-            outputs=[nb_state, selected_notebook_id, status] + row_outputs,
-            api_name=False,
-        ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
-        def _on_select():
-            return "Selected notebook updated. Use this for chat/ingestion."
-        select_btn.click(
-            _select_notebook,
-            inputs=[gr.State(i), nb_state],
-            outputs=[selected_notebook_id],
-            api_name=False,
-        ).then(_on_select, None, [status]).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
-
-    
     # Text Input Section 
     gr.Markdown("---")
     gr.Markdown("## Add Text")
