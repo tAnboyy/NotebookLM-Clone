@@ -9,3 +9,7 @@ sentence-transformers>=2.0.0
 einops>=0.7.0
 pypdf>=4.2.0
 beautifulsoup4>=4.12.3
+pyttsx3>=2.90
+transformers>=4.45.0
+torch>=2.2.0
+sentencepiece>=0.2.0

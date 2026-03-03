@@ -27,6 +27,7 @@ import gradio_client.utils as gradio_client_utils
 _log("3. Loading backend...")
 from backend.ingestion_service import ingest_pdf_chunks, ingest_url_chunks, remove_chunks_for_source
 from backend.notebook_service import create_notebook, list_notebooks, rename_notebook, delete_notebook
+from backend.podcast_service import generate_podcast, generate_podcast_audio
 from backend.chat_service import load_chat
 from backend.rag_service import rag_chat
 from backend.report_service import generate_report
@@ -131,7 +132,7 @@ def _get_notebooks(user_id: str | None):
     return list_notebooks(user_id)
 
 
-def _safe_create(new_name, state, selected_id, profile: gr.OAuthProfile | None):
+def _safe_create(new_name, state, selected_id, profile: gr.OAuthProfile | None = None):
     """Create notebook with name from text box."""
     try:
         user_id = _user_id(profile)
@@ -149,7 +150,7 @@ def _safe_create(new_name, state, selected_id, profile: gr.OAuthProfile | None):
         return gr.skip(), gr.skip(), gr.skip(), f"Error: {e}"
 
 
-def _safe_rename(idx, new_name, state, selected_id, profile: gr.OAuthProfile | None):
+def _safe_rename(idx, new_name, state, selected_id, profile: gr.OAuthProfile | None = None):
     """Rename notebook at index."""
     try:
         if idx is None or idx < 0 or idx >= len(state):
@@ -171,7 +172,7 @@ def _safe_rename(idx, new_name, state, selected_id, profile: gr.OAuthProfile | N
         return gr.skip(), gr.skip(), f"Error: {e}"
 
 
-def _safe_delete(idx, state, selected_id, profile: gr.OAuthProfile | None):
+def _safe_delete(idx, state, selected_id, profile: gr.OAuthProfile | None = None):
     """Delete notebook at index."""
     try:
         if idx is None or idx < 0 or idx >= len(state):
@@ -191,7 +192,7 @@ def _safe_delete(idx, state, selected_id, profile: gr.OAuthProfile | None):
         return gr.skip(), gr.skip(), f"Error: {e}"
 
 
-def _initial_load(profile: gr.OAuthProfile | None):
+def _initial_load(profile: gr.OAuthProfile | None = None):
     """Load notebooks on app load. Uses HF OAuth profile for user_id."""
     user_id = _user_id(profile)
     notebooks = _get_notebooks(user_id)
@@ -298,7 +299,7 @@ def _safe_upload_pdfs(files, selected_id, profile: gr.OAuthProfile | None):
         return f"Error uploading PDFs: {error}"
 
 
-def _list_uploaded_pdfs(selected_id, profile: gr.OAuthProfile | None):
+def _list_uploaded_pdfs(selected_id, profile: gr.OAuthProfile | None = None):
     """List uploaded PDFs for the selected notebook."""
     user_id = _user_id(profile)
     if not user_id or not selected_id:
@@ -313,7 +314,7 @@ def _list_uploaded_pdfs(selected_id, profile: gr.OAuthProfile | None):
     return gr.update(choices=pdf_names, value=selected_name)
 
 
-def _safe_remove_pdf(file_name, selected_id, profile: gr.OAuthProfile | None):
+def _safe_remove_pdf(file_name, selected_id, profile: gr.OAuthProfile | None = None):
     """Remove one uploaded PDF from the selected notebook."""
     try:
         user_id = _user_id(profile)
@@ -341,7 +342,7 @@ def _url_source_id(url: str) -> str:
     return f"url_{h}"
 
 
-def _safe_ingest_url(url, selected_id, profile: gr.OAuthProfile | None):
+def _safe_ingest_url(url, selected_id, profile: gr.OAuthProfile | None = None):
     """Ingest one URL into chunks table for the selected notebook."""
     try:
         user_id = _user_id(profile)
@@ -369,7 +370,7 @@ def _safe_ingest_url(url, selected_id, profile: gr.OAuthProfile | None):
     except Exception as error:
         return "", f"Error ingesting URL: {error}"
     
-def _safe_remove_url(url, selected_id, profile: gr.OAuthProfile | None):
+def _safe_remove_url(url, selected_id, profile: gr.OAuthProfile | None = None):
     try:
         user_id = _user_id(profile)
         if not user_id:
@@ -394,26 +395,24 @@ def _safe_remove_url(url, selected_id, profile: gr.OAuthProfile | None):
 # ── Upload Handler Functions ──────────────────────────────────
 def _do_upload(text_content, title, notebook_id, profile: gr.OAuthProfile | None):
     """Handle direct text input and ingestion."""
-    from backend.ingestion_txt import ingest_txt, list_sources
+    from backend.ingestion_txt import ingest_txt
 
     user_id = _user_id(profile)
 
     if not user_id:
-        return "❌ Please sign in first.", ""
+        return "Please sign in first."
     if not notebook_id:
-        return "❌ Please select a notebook first.", ""
+        return "Please select a notebook first."
     if not text_content or not text_content.strip():
-        return "❌ No text entered.", ""
+        return "No text entered."
 
     try:
-        # Use title as filename, fallback to timestamp
         filename = (title or "").strip()
         if not filename:
             filename = f"text_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         if not filename.endswith(".txt"):
             filename = filename + ".txt"
 
-        # Convert text to bytes for ingestion pipeline
         file_bytes = text_content.encode("utf-8")
 
         result = ingest_txt(
@@ -424,18 +423,15 @@ def _do_upload(text_content, title, notebook_id, profile: gr.OAuthProfile | None
         )
 
         meta = result["metadata"]
-        status_msg = (
-            f"✅ **{result['filename']}** saved successfully!\n\n"
+        return (
+            f" **{result['filename']}** saved successfully!\n\n"
             f"- Size: {meta['size_bytes'] / 1024:.1f} KB"
         )
 
-        #sources = list_sources(notebook_id)
-        return status_msg, ""
-
     except ValueError as e:
-        return f"❌ {str(e)}", ""
+        return f" {str(e)}"
     except Exception as e:
-        return f"❌ Unexpected error: {str(e)}", ""
+        return f"Unexpected error: {str(e)}"
 
 def _format_sources(sources: list[dict]) -> str:
     if not sources:
@@ -457,6 +453,117 @@ def _load_sources(notebook_id, profile: gr.OAuthProfile | None):
     return _format_sources(sources)
 
 
+def _safe_generate_podcast(notebook_id, profile: gr.OAuthProfile | None = None):
+    user_id = _user_id(profile)
+    if not user_id:
+        return "Please sign in first.", ""
+    if not notebook_id:
+        return "Please select a notebook first.", ""
+
+    try:
+        result = generate_podcast(notebook_id=str(notebook_id), user_id=user_id)
+        status = (
+            f"Podcast generated. Artifact: {result['artifact_id'] or 'saved'} | "
+            f"Sources: {result['sources_count']} | Chunks: {result['chunks_used']}"
+        )
+        return status, result["script"]
+    except Exception as error:
+        return f"Error generating podcast: {error}", ""
+
+
+def _safe_generate_podcast_audio(notebook_id, script, profile: gr.OAuthProfile | None = None):
+    user_id = _user_id(profile)
+    if not user_id:
+        return "Please sign in first.", None
+    if not notebook_id:
+        return "Please select a notebook first.", None
+    if not script or not script.strip():
+        return "Generate a podcast script first.", None
+
+    try:
+        result = generate_podcast_audio(notebook_id=str(notebook_id), user_id=user_id, script=script)
+        status = f"Podcast audio generated. Artifact: {result['artifact_id'] or 'saved'}"
+        return status, result["audio_path"]
+    except Exception as error:
+        return f"Error generating podcast audio: {error}", None
+
+# Quiz Handlers 
+def _get_notebook_pdfs(notebook_id):
+    if not notebook_id:
+        return gr.update(choices=[], value=None, visible=False)
+    from backend.db import supabase
+    result = (
+        supabase.table("chunks")
+        .select("source_id")
+        .eq("notebook_id", notebook_id)
+        .execute()
+    )
+    pdfs = list({r["source_id"] for r in (result.data or []) if r["source_id"].endswith(".pdf")})
+    return gr.update(choices=pdfs, value=pdfs[0] if pdfs else None, visible=True)
+
+def _generate_quiz(notebook_id, source_type, pdf_source_id, profile: gr.OAuthProfile | None):
+    from backend.quiz_service import generate_quiz
+
+    user_id = _user_id(profile)
+    if not user_id:
+        return "Please sign in first.", [], *([gr.update(visible=False)] * 5 * 4), gr.update(visible=False), ""
+    if not notebook_id:
+        return "Please select a notebook first.", [], *([gr.update(visible=False)] * 5 * 4), gr.update(visible=False), ""
+
+    type_map = {"Text": "txt", "PDF": "pdf", "URL": "url", "All": "all"}
+    source_type_key = type_map.get(source_type, "all")
+
+    try:
+        result = generate_quiz(notebook_id, source_type=source_type_key, source_id=pdf_source_id)
+        questions = result["questions"]
+        updates = []
+        for i in range(5):
+            if i < len(questions):
+                q = questions[i]
+                q_label = f"**Q{i+1}. {q['question']}**"
+                if q["type"] == "multiple_choice":
+                    updates += [gr.update(visible=True), gr.update(value=q_label), gr.update(choices=q["options"], value=None, visible=True), gr.update(value="", visible=False)]
+                elif q["type"] == "true_false":
+                    updates += [gr.update(visible=True), gr.update(value=q_label), gr.update(choices=["True", "False"], value=None, visible=True), gr.update(value="", visible=False)]
+                else:
+                    updates += [gr.update(visible=True), gr.update(value=q_label), gr.update(choices=[], value=None, visible=False), gr.update(value="", visible=True)]
+            else:
+                updates += [gr.update(visible=False), gr.update(value=""), gr.update(choices=[], value=None, visible=False), gr.update(value="", visible=False)]
+        return "Quiz generated!", questions, *updates, gr.update(visible=True), ""
+    except Exception as e:
+        return f" {e}", [], *([gr.update(visible=False)] * 5 * 4), gr.update(visible=False), ""
+
+
+def _submit_quiz(questions, *answers):
+    if not questions:
+        return " No quiz loaded."
+    score = 0
+    lines = []
+    for i, q in enumerate(questions):
+        radio_ans = answers[i] or ""
+        text_ans = answers[i + 5] or ""
+        user_ans = text_ans.strip() if q["type"] == "short_answer" else radio_ans.strip()
+        correct = q["answer"].strip()
+
+        if not user_ans:
+            is_correct = False
+        elif q["type"] == "multiple_choice":
+            user_letter = user_ans.split(".")[0].strip().upper()
+            correct_letter = correct[0].upper()
+            is_correct = user_letter == correct_letter
+        elif q["type"] == "true_false":
+            is_correct = user_ans.lower() == correct.lower()
+        else:
+            is_correct = user_ans.lower() in correct.lower() or correct.lower() in user_ans.lower()
+
+        if is_correct:
+            score += 1
+            lines.append(f"✅ **Q{i+1}**: Correct! *(Answer: {correct})*")
+        else:
+            lines.append(f"❌ **Q{i+1}**: Incorrect. *(Your answer: {user_ans or 'blank'} | Correct: {correct})*")
+
+    lines.append(f"\n**Score: {score}/{len(questions)}**")
+    return "\n\n".join(lines)
 def _chat_history_to_pairs(messages: list[dict]) -> list[tuple[str, str]]:
     """Convert load_chat output to Gradio Chatbot format [(user, assistant), ...]."""
     pairs = []
@@ -714,10 +821,103 @@ with gr.Blocks(
         api_name=False,
     ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
 
+    # Per-row: Rename, Delete, Select (profile injected by Gradio for OAuth)
+    for i in range(MAX_NOTEBOOKS):
+        rename_btn = row_components[i]["rename"]
+        delete_btn = row_components[i]["delete"]
+        select_btn = row_components[i]["select"]
+        name_txt = row_components[i]["name"]
+
+        rename_btn.click(
+            _safe_rename,
+            inputs=[gr.State(i), name_txt, nb_state, selected_notebook_id],
+            outputs=[nb_state, selected_notebook_id, status] + row_outputs,
+            api_name=False,
+        )
+        delete_btn.click(
+            _safe_delete,
+            inputs=[gr.State(i), nb_state, selected_notebook_id],
+            outputs=[nb_state, selected_notebook_id, status] + row_outputs,
+            api_name=False,
+        ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
+        def _on_select():
+            return "Selected notebook updated. Use this for chat/ingestion."
+        select_btn.click(
+            _select_notebook,
+            inputs=[gr.State(i), nb_state],
+            outputs=[selected_notebook_id],
+            api_name=False,
+        ).then(_on_select, None, [status]).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
+
+    
+    # Text Input Section 
+    gr.Markdown("---")
+    gr.Markdown("## Add Text")
+    gr.Markdown("Select a notebook above, then paste or type your text.")
+
+    with gr.Row():
+        txt_title = gr.Textbox(
+            label="Title",
+            placeholder="Give this text a name (e.g. 'Lecture Notes Week 1')",
+            scale=1,
+        )
+
+    txt_input = gr.Textbox(
+        label="Text Content",
+        placeholder="Paste or type your text here...",
+        lines=10,
+    )
+
+    submit_btn = gr.Button("Save & Process", variant="primary")
+
+    upload_status = gr.Markdown("", elem_classes=["status"])
+
+    # Podcast Section
+    gr.Markdown("---")
+    gr.Markdown("## Podcast")
+    gr.Markdown("Generate a podcast script for the selected notebook using all ingested content.")
+    with gr.Row():
+        podcast_btn = gr.Button("Generate Podcast", variant="primary")
+        podcast_audio_btn = gr.Button("Generate Podcast Audio", variant="secondary")
+    podcast_status = gr.Markdown("", elem_classes=["status"])
+    podcast_script = gr.Markdown("")
+    podcast_audio = gr.Audio(label="Podcast Audio", type="filepath")
+
+   # Quiz Section 
+    gr.Markdown("---")
+    gr.Markdown("## Generate Quiz")
+    gr.Markdown("Select a source type then generate a quiz.")
+
+    quiz_source_type = gr.Radio(
+        choices=["Text", "PDF", "URL", "All"],
+        value="All",
+        label="Source type",
+    )
+    quiz_pdf_dd = gr.Dropdown(
+        label="Select PDF",
+        choices=[],
+        value=None,
+        visible=False,
+    )
+    generate_quiz_btn = gr.Button("Generate Quiz", variant="primary")
+    quiz_status = gr.Markdown("")
+    quiz_state = gr.State([])
+
+    quiz_components = []
+    for i in range(5):
+        with gr.Group(visible=False) as q_group:
+            q_text = gr.Markdown("")
+            q_radio = gr.Radio(choices=[], label="Your answer", visible=False)
+            q_textbox = gr.Textbox(label="Your answer", visible=False)
+        quiz_components.append({"group": q_group, "text": q_text, "radio": q_radio, "textbox": q_textbox})
+
+    submit_quiz_btn = gr.Button("Submit Answers", variant="secondary", visible=False)
+    quiz_results = gr.Markdown("")
+
     submit_btn.click(
         _do_upload,
         inputs=[txt_input, txt_title, selected_notebook_id],
-        outputs=[upload_status, sources_display],
+        outputs=[upload_status],
     )
 
     report_btn.click(
@@ -730,7 +930,47 @@ with gr.Blocks(
     selected_notebook_id.change(
         _load_sources,
         inputs=[selected_notebook_id],
-        outputs=[sources_display],
+        outputs=[podcast_status, podcast_script],
+        api_name=False,
+    )
+
+    podcast_btn.click(
+        _safe_generate_podcast,
+        inputs=[selected_notebook_id],
+        outputs=[podcast_status, podcast_script],
+        api_name=False,
+    )
+
+    podcast_audio_btn.click(
+        _safe_generate_podcast_audio,
+        inputs=[selected_notebook_id, podcast_script],
+        outputs=[podcast_status, podcast_audio],
+        api_name=False,
+    )
+
+    quiz_source_type.change(
+        lambda t, nb: _get_notebook_pdfs(nb) if t == "PDF" else gr.update(visible=False, choices=[], value=None),
+        inputs=[quiz_source_type, selected_notebook_id],
+        outputs=[quiz_pdf_dd],
+    )
+
+    quiz_all_outputs = [quiz_status, quiz_state]
+    for c in quiz_components:
+        quiz_all_outputs += [c["group"], c["text"], c["radio"], c["textbox"]]
+    quiz_all_outputs += [submit_quiz_btn, quiz_results]
+
+    generate_quiz_btn.click(
+        _generate_quiz,
+        inputs=[selected_notebook_id, quiz_source_type, quiz_pdf_dd],
+        outputs=quiz_all_outputs,
+        api_name=False,
+    )
+
+    submit_quiz_btn.click(
+        _submit_quiz,
+        inputs=[quiz_state] + [c["radio"] for c in quiz_components] + [c["textbox"] for c in quiz_components],
+        outputs=[quiz_results],
+        api_name=False,
     )
 
     chat_submit_btn.click(
