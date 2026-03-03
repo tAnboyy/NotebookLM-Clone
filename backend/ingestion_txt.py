@@ -17,6 +17,9 @@ from sentence_transformers import SentenceTransformer
 # Load model once at module level (not on every call)
 _model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 #  Constants 
+from backend.embedding_service import encode as embed_texts
+# ── Constants ────────────────────────────────────────────────
+
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
@@ -114,16 +117,14 @@ def chunk_text(text: str, source_id: str, notebook_id: str, filename: str = "") 
 # Embed + Store 
 def embed_and_store_chunks(chunks: list[dict]) -> None:
     """
-    Embed chunks using sentence-transformers and store in pgvector.
+    Embed chunks using shared 1536-dim model and store in pgvector.
     """
     if not chunks:
         return
 
-    # Embed all chunks in one batch
     texts = [c["content"] for c in chunks]
-    embeddings = _model.encode(texts, show_progress_bar=False)
+    embeddings = embed_texts(texts, task="search_document")
 
-    # Build rows for Supabase insert
     rows = []
     for chunk, embedding in zip(chunks, embeddings):
         rows.append({
@@ -131,7 +132,7 @@ def embed_and_store_chunks(chunks: list[dict]) -> None:
             "source_id": str(chunk["source_id"]),
             "notebook_id": str(chunk["notebook_id"]),
             "content": chunk["content"],
-            "embedding": embedding.tolist(),
+            "embedding": embedding,
             "metadata": chunk["metadata"]
         })
 

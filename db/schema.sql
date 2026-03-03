@@ -33,19 +33,40 @@ create index if not exists idx_artifacts_notebook_id on artifacts(notebook_id);
 -- pgvector extension for embeddings
 create extension if not exists vector;
 
--- chunks with embeddings (for RAG)
+-- chunks with embeddings (for RAG) - 384 dims for MiniLM
 create table if not exists chunks (
   id uuid primary key default gen_random_uuid(),
   notebook_id uuid not null references notebooks(id) on delete cascade,
   source_id text,
   content text not null,
-  embedding vector(1536),
+  embedding vector(384),
   metadata jsonb,
   created_at timestamptz default now()
 );
 create index if not exists idx_chunks_notebook_id on chunks(notebook_id);
--- Vector index (run after you have data; ivfflat requires rows):
--- create index idx_chunks_embedding on chunks using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+
+-- Vector index for fast similarity search (run after chunks have data; ivfflat requires rows)
+create index if not exists idx_chunks_embedding on chunks using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+
+-- RPC for RAG retrieval: top-k chunks by cosine similarity, filtered by notebook_id
+create or replace function match_chunks(
+  query_embedding vector(384),
+  match_count int,
+  p_notebook_id uuid
+)
+returns table (id uuid, content text, metadata jsonb, similarity float)
+language plpgsql as $$
+begin
+  return query
+  select c.id, c.content, c.metadata,
+         1 - (c.embedding <=> query_embedding) as similarity
+  from chunks c
+  where c.notebook_id = p_notebook_id
+    and c.embedding is not null
+  order by c.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
 
 -- sources table (ingestion pipeline)
 create table if not exists sources (

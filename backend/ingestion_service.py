@@ -1,10 +1,11 @@
-"""PDF ingestion for RAG: extract text, chunk, and persist to chunks table."""
+"""PDF ingestion for RAG: extract text, chunk, embed, and persist to chunks table."""
 
 from pathlib import Path
 
 from pypdf import PdfReader
 
 from backend.db import supabase
+from backend.embedding_service import encode as embed_texts
 
 import requests
 from bs4 import BeautifulSoup
@@ -39,7 +40,7 @@ def _chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = 
 
 
 def ingest_pdf_chunks(notebook_id: str, source_id: str, pdf_path: Path) -> int:
-    """Extract and store chunks for a single PDF. Returns number of chunks inserted."""
+    """Extract, embed, and store chunks for a single PDF. Returns number of chunks inserted."""
     text = _extract_pdf_text(pdf_path)
     chunks = _chunk_text(text)
 
@@ -48,11 +49,14 @@ def ingest_pdf_chunks(notebook_id: str, source_id: str, pdf_path: Path) -> int:
     if not chunks:
         return 0
 
+    embeddings = embed_texts(chunks, task="search_document")
+
     rows = [
         {
             "notebook_id": notebook_id,
             "source_id": source_id,
             "content": chunk,
+            "embedding": embeddings[index],
             "metadata": {
                 "file_name": source_id,
                 "file_path": str(pdf_path),
@@ -88,6 +92,7 @@ def _extract_url_text(url: str) -> str:
     return " ".join(text.split()).strip()
 
 def ingest_url_chunks(notebook_id: str, source_id: str, url: str) -> int:
+    """Extract, embed, and store chunks for a URL. Returns number of chunks inserted."""
     text = _extract_url_text(url)
     chunks = _chunk_text(text)
 
@@ -96,11 +101,14 @@ def ingest_url_chunks(notebook_id: str, source_id: str, url: str) -> int:
     if not chunks:
         return 0
 
+    embeddings = embed_texts(chunks, task="search_document")
+
     rows = [
         {
             "notebook_id": notebook_id,
             "source_id": source_id,
             "content": chunk,
+            "embedding": embeddings[index],
             "metadata": {
                 "url": url,
                 "chunk_index": index,
