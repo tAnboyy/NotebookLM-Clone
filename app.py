@@ -1,5 +1,16 @@
 from pathlib import Path
 import shutil
+import sys
+import warnings
+
+# Flush print immediately
+def _log(msg):
+    print(msg, flush=True)
+
+_log("1. Loading env...")
+# Suppress noisy dependency warnings
+warnings.filterwarnings("ignore", message=".*urllib3.*")
+warnings.filterwarnings("ignore", message=".*chardet.*")
 
 from dotenv import load_dotenv
 
@@ -7,14 +18,20 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+_log("2. Loading Gradio...")
 from datetime import datetime
 import gradio as gr
+_log("2a. Loading gradio_client...")
 import gradio_client.utils as gradio_client_utils
 
+_log("3. Loading backend...")
 from backend.ingestion_service import ingest_pdf_chunks, ingest_url_chunks, remove_chunks_for_source
 from backend.notebook_service import create_notebook, list_notebooks, rename_notebook, delete_notebook
+from backend.chat_service import load_chat
+from backend.rag_service import rag_chat
 
 import hashlib
+_log("4. Imports done.")
 
 _original_gradio_get_type = gradio_client_utils.get_type
 _original_json_schema_to_python_type = gradio_client_utils._json_schema_to_python_type
@@ -35,43 +52,76 @@ def _patched_json_schema_to_python_type(schema, defs=None):
 gradio_client_utils.get_type = _patched_gradio_get_type
 gradio_client_utils._json_schema_to_python_type = _patched_json_schema_to_python_type
 
-# Theme: adapts to light/dark mode
+# Theme: adapts to light/dark mode (use default font to avoid network fetch on startup)
 theme = gr.themes.Soft(
     primary_hue="blue",
     secondary_hue="slate",
-    font=gr.themes.GoogleFont("Inter"),
 )
 
 CUSTOM_CSS = """
-.container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
-.login-center { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px 0; }
-.login-center .login-btn-wrap { display: flex; justify-content: center; width: 100%; }
-.login-center .login-btn-wrap button { display: inline-flex; align-items: center; gap: 8px; }
-.hero { font-size: 1.5rem; font-weight: 600; color: #1e293b; margin-bottom: 8px; }
-.sub { font-size: 0.875rem; color: #64748b; margin-bottom: 24px; }
-.nb-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #e2e8f0; }
-.nb-row:last-child { border-bottom: none; }
-.gr-button { min-height: 36px !important; padding: 0 16px !important; font-weight: 500 !important; border-radius: 8px !important; }
-.gr-input { min-height: 40px !important; border-radius: 8px !important; }
-.status { font-size: 0.875rem; color: #64748b; margin-top: 16px; padding: 12px 16px; background: #f8fafc; border-radius: 8px; }
+.gradio-container { max-width: 1000px !important; margin: 0 auto !important; }
+.container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+.header-bar { padding: 12px 0; border-bottom: 1px solid #e2e8f0; margin-bottom: 24px; display: flex !important; justify-content: space-between !important; align-items: center !important; white-space: nowrap; }
+.login-center { display: flex; justify-content: center; width: 100%; }
+#auth-text { white-space: nowrap; margin: 8px 0 16px 0; font-size: 0.95rem; opacity: 0.9; }
+.gr-button { padding: 14px 28px !important; font-size: 0.9rem !important; border-radius: 12px !important; white-space: nowrap !important; width: auto !important; }
+.gr-button[aria-label*="Logout"] { min-width: auto !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; }
+.header-bar .gr-button { padding-left: 40px !important; padding-right: 40px !important; min-width: 220px !important; font-size: 0.8rem !important; }
+.dark .header-bar { border-bottom: 1px solid #334155; }
+
+.hero-section { margin-bottom: 16px; }
+.login-container { padding: 12px 0; }
+.create-strip { padding: 18px; border-radius: 16px; }
+.create-row { display: flex !important; align-items: center !important; gap: 16px !important; }
+.create-label { white-space: nowrap; font-size: 0.95rem; margin: 0; min-width: 180px; }
+.create-row .gr-textbox { flex: 1 !important; }
+.create-row .gr-textbox textarea,
+.create-row .gr-textbox input { border-radius: 10px !important; }
+.create-row .gr-button { border-radius: 10px !important; padding: 10px 20px !important; }
+.hero-title { font-size: 2rem; font-weight: 700; color: #1e293b; margin: 0 0 8px 0; }
+.hero-sub { font-size: 1rem; color: #64748b; margin: 0; line-height: 1.5; }
+
+.section-card { padding: 24px; border-radius: 16px; background: #f8fafc; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.notebook-card { padding: 14px 20px; border-radius: 12px; background: #fff; margin-bottom: 8px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px; transition: background 0.15s ease; }
+.notebook-card:hover { background: #f8fafc; }
+
+.section-title { font-size: 1.125rem; font-weight: 600; color: #1e293b; margin: 0 0 16px 0; }
+.section-row { display: flex !important; align-items: center !important; gap: 16px !important; margin-bottom: 12px; }
+.section-row .gr-textbox { flex: 1 !important; }
+.section-row .gr-button { border-radius: 10px !important; padding: 10px 20px !important; }
+
+.status { font-size: 0.875rem; color: #64748b; margin-top: 16px; padding: 12px 16px; background: #f1f5f9; border-radius: 12px; }
+
 @media (prefers-color-scheme: dark) {
-  .hero { color: #f1f5f9 !important; }
-  .sub { color: #94a3b8 !important; }
-  .nb-row { border-color: #334155 !important; }
-  .status { color: #94a3b8 !important; background: #1e293b !important; }
+  .hero-title { color: #f1f5f9 !important; }
+  .hero-sub { color: #94a3b8 !important; }
+  .section-card { background: #1e293b !important; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  .section-title { color: #f1f5f9 !important; }
+  .notebook-card { background: #334155 !important; border-color: #475569; }
+  .notebook-card:hover { background: #475569 !important; }
+  .status { color: #94a3b8 !important; background: #334155 !important; }
 }
-.dark .hero { color: #f1f5f9 !important; }
-.dark .sub { color: #94a3b8 !important; }
-.dark .nb-row { border-color: #334155 !important; }
-.dark .status { color: #94a3b8 !important; background: #1e293b !important; }
+.dark .hero-title { color: #f1f5f9 !important; }
+.dark .hero-sub { color: #94a3b8 !important; }
+.dark .section-card { background: #1e293b !important; }
+.dark .section-title { color: #f1f5f9 !important; }
+.dark .notebook-card { background: #334155 !important; border-color: #475569; }
+.dark .notebook-card:hover { background: #475569 !important; }
+.dark .status { color: #94a3b8 !important; background: #334155 !important; }
 """
-
-MAX_NOTEBOOKS = 20
-
 
 def _user_id(profile: gr.OAuthProfile | None) -> str | None:
     """Extract user_id from HF OAuth profile. None if not logged in."""
-    return profile.name if profile else None
+    if not profile:
+        return None
+    return (
+        getattr(profile, "id", None)
+        or getattr(profile, "sub", None)
+        or getattr(profile, "preferred_username", None)
+        or getattr(profile, "username", None)
+        or getattr(profile, "name", None)
+    )
 
 
 def _get_notebooks(user_id: str | None):
@@ -85,70 +135,59 @@ def _safe_create(new_name, state, selected_id, profile: gr.OAuthProfile | None):
     try:
         user_id = _user_id(profile)
         if not user_id:
-            return gr.skip(), gr.skip(), gr.skip(), "Please sign in with Hugging Face", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return gr.skip(), gr.skip(), gr.skip(), "Please sign in with Hugging Face"
         name = (new_name or "").strip() or "Untitled Notebook"
         nb = create_notebook(user_id, name)
         if nb:
             notebooks = _get_notebooks(user_id)
-            state = [(n["notebook_id"], n["name"]) for n in notebooks]
-            updates = _build_row_updates(notebooks)
-            new_selected = nb["notebook_id"]
+            new_state = [(n["notebook_id"], n["name"]) for n in notebooks]
             status = f"Created: {nb['name']}"
-            return "", state, new_selected, status, *updates
-        return gr.skip(), gr.skip(), gr.skip(), "Failed to create", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return "", new_state, nb["notebook_id"], status
+        return gr.skip(), gr.skip(), gr.skip(), "Failed to create"
     except Exception as e:
-        return gr.skip(), gr.skip(), gr.skip(), f"Error: {e}", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+        return gr.skip(), gr.skip(), gr.skip(), f"Error: {e}"
 
 
 def _safe_rename(idx, new_name, state, selected_id, profile: gr.OAuthProfile | None):
     """Rename notebook at index."""
     try:
         if idx is None or idx < 0 or idx >= len(state):
-            return gr.skip(), gr.skip(), gr.skip(), *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return gr.skip(), gr.skip(), "Invalid selection"
         nb_id, _ = state[idx]
         name = (new_name or "").strip()
         if not name:
-            return gr.skip(), gr.skip(), gr.skip(), "Enter a name.", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return gr.skip(), gr.skip(), "Enter a name."
         user_id = _user_id(profile)
         if not user_id:
-            return gr.skip(), gr.skip(), gr.skip(), "Please sign in", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return gr.skip(), gr.skip(), "Please sign in"
         ok = rename_notebook(user_id, nb_id, name)
         if ok:
             notebooks = _get_notebooks(user_id)
-            state = [(n["notebook_id"], n["name"]) for n in notebooks]
-            updates = _build_row_updates(notebooks)
-            return state, selected_id, f"Renamed to: {name}", *updates
-        return gr.skip(), gr.skip(), gr.skip(), "Failed to rename", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            new_state = [(n["notebook_id"], n["name"]) for n in notebooks]
+            return new_state, selected_id, f"Renamed to: {name}"
+        return gr.skip(), gr.skip(), "Failed to rename"
     except Exception as e:
-        return gr.skip(), gr.skip(), gr.skip(), f"Error: {e}", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+        return gr.skip(), gr.skip(), f"Error: {e}"
 
 
 def _safe_delete(idx, state, selected_id, profile: gr.OAuthProfile | None):
     """Delete notebook at index."""
     try:
         if idx is None or idx < 0 or idx >= len(state):
-            return gr.skip(), gr.skip(), gr.skip(), *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return gr.skip(), gr.skip(), "Invalid selection"
         nb_id, _ = state[idx]
         user_id = _user_id(profile)
         if not user_id:
-            return gr.skip(), gr.skip(), gr.skip(), "Please sign in", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return gr.skip(), gr.skip(), "Please sign in"
         ok = delete_notebook(user_id, nb_id)
         if ok:
             notebooks = _get_notebooks(user_id)
-            state = [(n["notebook_id"], n["name"]) for n in notebooks]
-            updates = _build_row_updates(notebooks)
+            new_state = [(n["notebook_id"], n["name"]) for n in notebooks]
             new_selected = notebooks[0]["notebook_id"] if notebooks else None
-            return state, new_selected, "Notebook deleted", *updates
-        return gr.skip(), gr.skip(), gr.skip(), "Failed to delete", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
+            return new_state, new_selected, "Notebook deleted"
+        return gr.skip(), gr.skip(), "Failed to delete"
     except Exception as e:
-        return gr.skip(), gr.skip(), gr.skip(), f"Error: {e}", *([gr.skip()] * (MAX_NOTEBOOKS * 2))
-
-
-def _select_notebook(idx, state):
-    """Set selected notebook when user interacts with a row."""
-    if idx is None or idx < 0 or idx >= len(state):
-        return gr.skip()
-    return state[idx][0]
+        return gr.skip(), gr.skip(), f"Error: {e}"
 
 
 def _initial_load(profile: gr.OAuthProfile | None):
@@ -157,9 +196,10 @@ def _initial_load(profile: gr.OAuthProfile | None):
     notebooks = _get_notebooks(user_id)
     state = [(n["notebook_id"], n["name"]) for n in notebooks]
     selected = notebooks[0]["notebook_id"] if notebooks else None
-    updates = _build_row_updates(notebooks)
     status = f"Signed in as {user_id}" if user_id else "Sign in with Hugging Face to manage notebooks."
-    return state, selected, status, *updates
+    auth_update = f"You are logged in as {getattr(profile, 'name', None) or user_id} ({_user_id(profile)})" if user_id else ""
+    auth_row_visible = bool(user_id)
+    return state, selected, status, auth_update, gr.update(visible=auth_row_visible), gr.update(visible=bool(user_id)), gr.update(visible=not bool(user_id))
 
 
 def _safe_upload_pdfs(files, selected_id, profile: gr.OAuthProfile | None):
@@ -310,16 +350,6 @@ def _safe_remove_url(url, selected_id, profile: gr.OAuthProfile | None):
 
 
 
-def _build_row_updates(notebooks):
-    """Return gr.update values for each row: visibility, then text value."""
-    out = []
-    for i in range(MAX_NOTEBOOKS):
-        visible = i < len(notebooks)
-        name = notebooks[i]["name"] if visible else ""
-        out.append(gr.update(visible=visible))
-        out.append(gr.update(value=name, visible=visible))
-    return out
-
 # ── Upload Handler Functions ──────────────────────────────────
 def _do_upload(text_content, title, notebook_id, profile: gr.OAuthProfile | None):
     """Handle direct text input and ingestion."""
@@ -385,90 +415,218 @@ def _load_sources(notebook_id, profile: gr.OAuthProfile | None):
     sources = list_sources(notebook_id)
     return _format_sources(sources)
 
+
+def _chat_history_to_pairs(messages: list[dict]) -> list[tuple[str, str]]:
+    """Convert load_chat output to Gradio Chatbot format [(user, assistant), ...]."""
+    pairs = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if m["role"] == "user":
+            user_content = m["content"] or ""
+            asst_content = ""
+            if i + 1 < len(messages) and messages[i + 1]["role"] == "assistant":
+                asst_content = messages[i + 1]["content"] or ""
+                i += 1
+            pairs.append((user_content, asst_content))
+        i += 1
+    return pairs
+
+
+def _load_chat_history(notebook_id) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Load chat for notebook. Returns (history_pairs, history_pairs) for State and Chatbot."""
+    if not notebook_id:
+        return [], []
+    messages = load_chat(notebook_id)
+    pairs = _chat_history_to_pairs(messages)
+    return pairs, pairs
+
+
+def _on_chat_submit(query, notebook_id, chat_history, profile: gr.OAuthProfile | None):
+    """Handle chat submit: call RAG, return updated history."""
+    if not notebook_id:
+        return "", chat_history, "Select a notebook first."
+    if not query or not query.strip():
+        return "", chat_history, "Enter a message."
+    user_id = _user_id(profile)
+    if not user_id:
+        return "", chat_history, "Please sign in first."
+    try:
+        answer, updated = rag_chat(notebook_id, query.strip(), chat_history)
+        return "", updated, ""
+    except Exception as e:
+        return "", chat_history, f"Error: {e}"
+
 with gr.Blocks(
     title="NotebookLM Clone - Notebooks",
     theme=theme,
     css=CUSTOM_CSS,
 ) as demo:
-    gr.HTML('<div class="container"><p class="hero">Notebook Manager</p><p class="sub">Create notebook below, then manage with Rename and Delete</p></div>')
+    with gr.Row(elem_classes=["header-bar"]):
+        gr.Markdown("### 📓 NotebookLM Clone")
+        login_btn = gr.LoginButton(value="🤗 Login with Hugging Face", size="lg")
 
-    with gr.Row(elem_classes=["login-center"]):
-        gr.Markdown("**Sign in with Hugging Face to access your notebooks**")
-        with gr.Row(elem_classes=["login-btn-wrap"]):
-            login_btn = gr.LoginButton(value="🤗 Login with Hugging Face", size="lg")
+    with gr.Row(visible=False) as auth_info_row:
+        auth_text = gr.Markdown("", elem_id="auth-text")
 
-    nb_state = gr.State([])
-    selected_notebook_id = gr.State(None)
+    gr.HTML("""
+    <div class="container hero-section">
+        <h1 class="hero-title">📓 NotebookLM Clone</h1>
+        <p class="hero-sub">Chat with your documents. Generate reports, quizzes, and podcasts with citations.</p>
+    </div>
+    """)
 
-    # Create section: text box + Create button
-    with gr.Row():
-        create_txt = gr.Textbox(
-            label="Create notebook",
-            placeholder="Enter new notebook name",
-            value="",
-            scale=3,
-        )
-        create_btn = gr.Button("Create", variant="primary", scale=1)
+    with gr.Column(visible=False, elem_classes=["login-container"]) as login_container:
+        gr.Markdown("**Sign in with Hugging Face to access your notebooks.**", elem_classes=["login-center"])
 
-    with gr.Row():
-        pdf_upload_btn = gr.UploadButton(
-            "Upload PDFs",
-            file_types=[".pdf"],
-            file_count="multiple",
-            type="filepath",
-            variant="secondary",
-        )
+    with gr.Column(visible=False) as app_content:
+        nb_state = gr.State([])
+        selected_notebook_id = gr.State(None)
 
-    with gr.Row():
-        uploaded_pdf_dd = gr.Dropdown(
-            label="Uploaded PDFs",
-            choices=[],
-            value=None,
-            scale=3,
-            allow_custom_value=False,
-        )
-        remove_pdf_btn = gr.Button("Remove selected PDF", variant="stop", scale=1)
+        with gr.Group(elem_classes=["create-strip"]):
+            with gr.Row(elem_classes=["create-row"]):
+                gr.Markdown("Create new notebook", elem_classes=["create-label"])
+                create_txt = gr.Textbox(
+                    placeholder="Enter new notebook name",
+                    show_label=False,
+                    container=False,
+                    value="",
+                )
+                create_btn = gr.Button("Create", variant="primary", size="sm")
 
-    with gr.Row():
-        url_txt = gr.Textbox(
-            label="Ingest web URL",
-            placeholder="https://example.com",
-            value="",
-            scale=3,
-        )
-        ingest_url_btn = gr.Button("Ingest URL", variant="primary", scale=1)
-        remove_url_btn = gr.Button("Delete URL", variant="stop", scale=1)
+        with gr.Group(elem_classes=["section-card"]):
+            gr.Markdown("**Sources**", elem_classes=["section-title"])
+            gr.Markdown("*Upload PDFs, ingest URLs, or add text to your selected notebook*")
+            with gr.Row(elem_classes=["section-row"]):
+                pdf_upload_btn = gr.UploadButton(
+                    "Upload PDFs",
+                    file_types=[".pdf"],
+                    file_count="multiple",
+                    type="filepath",
+                    variant="secondary",
+                )
+            with gr.Row(elem_classes=["section-row"]):
+                uploaded_pdf_dd = gr.Dropdown(
+                    label="Uploaded PDFs",
+                    choices=[],
+                    value=None,
+                    scale=3,
+                    allow_custom_value=False,
+                )
+                remove_pdf_btn = gr.Button("Remove selected PDF", variant="stop", scale=1)
+            with gr.Row(elem_classes=["section-row"]):
+                url_txt = gr.Textbox(
+                    label="Ingest web URL",
+                    placeholder="https://example.com",
+                    value="",
+                    scale=3,
+                )
+                ingest_url_btn = gr.Button("Ingest URL", variant="primary", scale=1)
+                remove_url_btn = gr.Button("Delete URL", variant="stop", scale=1)
 
-    gr.Markdown("---")
-    gr.Markdown("**Your notebooks** (selected notebook used for chat/ingestion)")
+        gr.HTML("<br>")
+        gr.Markdown("**Your Notebooks**", elem_classes=["section-title"])
+        gr.Markdown("*Selected notebook is used for chat and ingestion*", elem_id="sub-hint")
+        gr.HTML("<br>")
 
-    # Rows: each notebook has [name] [Rename] [Delete]
-    row_components = []
-    row_outputs = []
-    for i in range(MAX_NOTEBOOKS):
-        with gr.Row(visible=False) as row:
-            name_txt = gr.Textbox(
-                value="",
-                show_label=False,
-                scale=3,
-                min_width=200,
+        status = gr.Markdown("Sign in with Hugging Face to manage notebooks.", elem_classes=["status"])
+
+        @gr.render(inputs=[nb_state])
+        def render_notebooks(state):
+            if not state:
+                gr.Markdown("No notebooks yet. Create one to get started.")
+            else:
+                for i, (nb_id, name) in enumerate(state):
+                    idx = i
+                    with gr.Row(elem_classes=["notebook-card"]):
+                        name_txt = gr.Textbox(value=name, show_label=False, scale=4, min_width=240, key=f"nb-name-{nb_id}")
+                        select_btn = gr.Button("Select", variant="primary", scale=1, min_width=80, size="sm")
+                        rename_btn = gr.Button("Rename", variant="secondary", scale=1, min_width=80, size="sm")
+                        delete_btn = gr.Button("Delete", variant="secondary", scale=1, min_width=80, size="sm")
+
+                        def on_select(nb_id=nb_id):
+                            return nb_id
+
+                        def on_select_status():
+                            return "Selected notebook updated. Use this for chat/ingestion."
+
+                        select_btn.click(
+                            on_select,
+                            inputs=None,
+                            outputs=[selected_notebook_id],
+                        ).then(on_select_status, None, [status]).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
+
+                        rename_btn.click(
+                            _safe_rename,
+                            inputs=[gr.State(idx), name_txt, nb_state, selected_notebook_id],
+                            outputs=[nb_state, selected_notebook_id, status],
+                            api_name=False,
+                        )
+
+                        delete_btn.click(
+                            _safe_delete,
+                            inputs=[gr.State(idx), nb_state, selected_notebook_id],
+                            outputs=[nb_state, selected_notebook_id, status],
+                            api_name=False,
+                        ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
+
+        gr.HTML("<br>")
+
+        with gr.Group(elem_classes=["section-card"]):
+            gr.Markdown("**Add Text**", elem_classes=["section-title"])
+            gr.Markdown("*Select a notebook above, then paste or type your text*")
+            with gr.Row():
+                txt_title = gr.Textbox(
+                    label="Title",
+                    placeholder="Give this text a name (e.g. 'Lecture Notes Week 1')",
+                    scale=1,
+                )
+            txt_input = gr.Textbox(
+                label="Text Content",
+                placeholder="Paste or type your text here...",
+                lines=10,
             )
-            rename_btn = gr.Button("Rename", scale=1, min_width=80)
-            delete_btn = gr.Button("Delete", variant="stop", scale=1, min_width=80)
-            select_btn = gr.Button("Select", scale=1, min_width=70)
-            row_components.append({"row": row, "name": name_txt, "rename": rename_btn, "delete": delete_btn, "select": select_btn})
-            row_outputs.extend([row, name_txt])
+            submit_btn = gr.Button("Save & Process", variant="primary")
+            upload_status = gr.Markdown("", elem_classes=["status"])
+            sources_display = gr.Markdown("")
 
-    status = gr.Markdown("Sign in with Hugging Face to manage notebooks.", elem_classes=["status"])
+        with gr.Group(elem_classes=["section-card"]):
+            gr.Markdown("**Chat**", elem_classes=["section-title"])
+            gr.Markdown("*Ask questions about your notebook sources. Answers are grounded in retrieved chunks with citations.*")
+            chat_history_state = gr.State([])
+            chatbot = gr.Chatbot(label="Chat history", height=400)
+            chat_input = gr.Textbox(
+                label="Message",
+                placeholder="Ask a question about your sources...",
+                show_label=False,
+                lines=2,
+            )
+            chat_submit_btn = gr.Button("Send", variant="primary")
+            chat_status = gr.Markdown("", elem_classes=["status"])
 
-    demo.load(_initial_load, inputs=None, outputs=[nb_state, selected_notebook_id, status] + row_outputs, api_name=False)
+    demo.load(
+        _initial_load,
+        inputs=None,
+        outputs=[nb_state, selected_notebook_id, status, auth_text, auth_info_row, app_content, login_container],
+        api_name=False,
+    )
     demo.load(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd], api_name=False)
 
-    # Create button
+    def _on_notebook_select_for_chat(notebook_id):
+        hist, _ = _load_chat_history(notebook_id)
+        return hist, hist
+
+    selected_notebook_id.change(
+        _on_notebook_select_for_chat,
+        inputs=[selected_notebook_id],
+        outputs=[chat_history_state, chatbot],
+        api_name=False,
+    )
+
     create_btn.click(
         _safe_create,
         inputs=[create_txt, nb_state, selected_notebook_id],
-        outputs=[create_txt, nb_state, selected_notebook_id, status] + row_outputs,
+        outputs=[create_txt, nb_state, selected_notebook_id, status],
         api_name=False,
     ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
 
@@ -500,57 +658,6 @@ with gr.Blocks(
         api_name=False,
     ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
 
-    # Per-row: Rename, Delete, Select (profile injected by Gradio for OAuth)
-    for i in range(MAX_NOTEBOOKS):
-        rename_btn = row_components[i]["rename"]
-        delete_btn = row_components[i]["delete"]
-        select_btn = row_components[i]["select"]
-        name_txt = row_components[i]["name"]
-
-        rename_btn.click(
-            _safe_rename,
-            inputs=[gr.State(i), name_txt, nb_state, selected_notebook_id],
-            outputs=[nb_state, selected_notebook_id, status] + row_outputs,
-            api_name=False,
-        )
-        delete_btn.click(
-            _safe_delete,
-            inputs=[gr.State(i), nb_state, selected_notebook_id],
-            outputs=[nb_state, selected_notebook_id, status] + row_outputs,
-            api_name=False,
-        ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
-        def _on_select():
-            return "Selected notebook updated. Use this for chat/ingestion."
-        select_btn.click(
-            _select_notebook,
-            inputs=[gr.State(i), nb_state],
-            outputs=[selected_notebook_id],
-            api_name=False,
-        ).then(_on_select, None, [status]).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
-
-    # ── Text Input Section ────────────────────────────────────
-    gr.Markdown("---")
-    gr.Markdown("## Add Text")
-    gr.Markdown("Select a notebook above, then paste or type your text.")
-
-    with gr.Row():
-        txt_title = gr.Textbox(
-            label="Title",
-            placeholder="Give this text a name (e.g. 'Lecture Notes Week 1')",
-            scale=1,
-        )
-
-    txt_input = gr.Textbox(
-        label="Text Content",
-        placeholder="Paste or type your text here...",
-        lines=10,
-    )
-
-    submit_btn = gr.Button("Save & Process", variant="primary")
-
-    upload_status = gr.Markdown("", elem_classes=["status"])
-    sources_display = gr.Markdown("")
-
     submit_btn.click(
         _do_upload,
         inputs=[txt_input, txt_title, selected_notebook_id],
@@ -563,4 +670,17 @@ with gr.Blocks(
         outputs=[sources_display],
     )
 
-demo.launch()
+    chat_submit_btn.click(
+        _on_chat_submit,
+        inputs=[chat_input, selected_notebook_id, chat_history_state],
+        outputs=[chat_input, chat_history_state, chat_status],
+        api_name=False,
+    ).then(
+        lambda h: (h, h),
+        inputs=[chat_history_state],
+        outputs=[chat_history_state, chatbot],
+    )
+
+if __name__ == "__main__":
+    _log("5. Launching Gradio...")
+    demo.launch()
