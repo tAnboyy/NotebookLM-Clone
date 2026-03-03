@@ -88,9 +88,12 @@ def generate_quiz(notebook_id: str, source_type: str = "all", source_id: str = N
         chunks = _get_chunks_by_source_id(notebook_id, source_id)
     elif source_type in ("txt", "url"):
         chunks = _get_chunks_by_type(notebook_id, source_type)
+        if not chunks:
+            source_label = "text" if source_type == "txt" else "URL"
+            raise ValueError(f"No {source_label} sources found. Please add a {source_label} source first.")
     else:
         chunks = _get_chunks_for_notebook(notebook_id)
-
+    
     print(f"Found {len(chunks)} chunks for source_type={source_type}")
     if not chunks:
         raise ValueError("No chunks found for this source. Please add sources first.")
@@ -137,33 +140,47 @@ def _get_chunks_by_source_id(notebook_id: str, source_id: str, limit: int = 10) 
 
 
 def _get_chunks_by_type(notebook_id: str, source_type: str, limit: int = 10) -> list[str]:
-    """Fetch chunks filtered by source type (txt = UUID source_ids, url = url_ prefix)."""
     result = (
         supabase.table("chunks")
-        .select("content, source_id")
+        .select("content, source_id, created_at")
         .eq("notebook_id", notebook_id)
+        .order("created_at", desc=True)
         .execute()
     )
     rows = result.data or []
     if source_type == "url":
-        filtered = [r["content"] for r in rows if r["source_id"].startswith("url_")]
-    else:  # txt — UUID source_ids
-        filtered = [r["content"] for r in rows if not r["source_id"].startswith("url_") and not r["source_id"].endswith(".pdf")]
-    return filtered[:limit]
+        filtered = [r for r in rows if r["source_id"].startswith("url_")]
+    else:  # txt
+        filtered = [r for r in rows if not r["source_id"].startswith("url_") and not r["source_id"].endswith(".pdf")]
+    
+    if not filtered:
+        return []
+    
+    # Use only the most recent source_id
+    latest_source_id = filtered[0]["source_id"]
+    return [r["content"] for r in filtered if r["source_id"] == latest_source_id][:limit]
 
     
 def _parse_quiz(raw: str) -> list[dict]:
     print(f"RAW OUTPUT:\n{raw}\n")
-    # Find the start of the JSON array
     start = raw.find('[')
     if start == -1:
         raise ValueError("No JSON array found in model output.")
     
     json_str = raw[start:].strip()
     
-    # If closing bracket is missing, add it
-    if not json_str.endswith(']'):
-        # Remove trailing comma if present
-        json_str = json_str.rstrip().rstrip(',') + '\n]'
+    # Try parsing as-is first
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        pass
     
-    return json.loads(json_str)
+    # Try fixing truncated JSON by extracting complete objects only
+    objects = re.findall(r'\{[^{}]+\}', json_str, re.DOTALL)
+    if objects:
+        try:
+            return json.loads('[' + ','.join(objects) + ']')
+        except json.JSONDecodeError:
+            pass
+    
+    raise ValueError("Could not parse quiz JSON from model output.")

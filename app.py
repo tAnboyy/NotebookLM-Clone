@@ -381,18 +381,18 @@ def _load_sources(notebook_id, profile: gr.OAuthProfile | None):
     return _format_sources(sources)
 
 # Quiz Handlers 
-def _get_notebook_pdfs(notebook_id):
-    if not notebook_id:
+def _get_notebook_pdfs(notebook_id, profile: gr.OAuthProfile | None):
+    user_id = _user_id(profile)
+    if not user_id or not notebook_id:
         return gr.update(choices=[], value=None, visible=False)
-    from backend.db import supabase
-    result = (
-        supabase.table("chunks")
-        .select("source_id")
-        .eq("notebook_id", notebook_id)
-        .execute()
-    )
-    pdfs = list({r["source_id"] for r in (result.data or []) if r["source_id"].endswith(".pdf")})
+    
+    target_dir = Path("data") / "uploads" / user_id / str(notebook_id)
+    if not target_dir.exists():
+        return gr.update(choices=[], value=None, visible=False)
+    
+    pdfs = sorted([p.name for p in target_dir.glob("*.pdf")])
     return gr.update(choices=pdfs, value=pdfs[0] if pdfs else None, visible=True)
+
 
 def _generate_quiz(notebook_id, source_type, pdf_source_id, profile: gr.OAuthProfile | None):
     from backend.quiz_service import generate_quiz
@@ -405,6 +405,9 @@ def _generate_quiz(notebook_id, source_type, pdf_source_id, profile: gr.OAuthPro
 
     type_map = {"Text": "txt", "PDF": "pdf", "URL": "url", "All": "all"}
     source_type_key = type_map.get(source_type, "all")
+
+    if source_type_key == "pdf" and not pdf_source_id:
+        return "Pick a PDF first.", [], *([gr.update(visible=False)] * 5 * 4), gr.update(visible=False), ""
 
     try:
         result = generate_quiz(notebook_id, source_type=source_type_key, source_id=pdf_source_id)
@@ -419,6 +422,7 @@ def _generate_quiz(notebook_id, source_type, pdf_source_id, profile: gr.OAuthPro
                 elif q["type"] == "true_false":
                     updates += [gr.update(visible=True), gr.update(value=q_label), gr.update(choices=["True", "False"], value=None, visible=True), gr.update(value="", visible=False)]
                 else:
+                    # change this line for short_answer:
                     updates += [gr.update(visible=True), gr.update(value=q_label), gr.update(choices=[], value=None, visible=False), gr.update(value="", visible=True)]
             else:
                 updates += [gr.update(visible=False), gr.update(value=""), gr.update(choices=[], value=None, visible=False), gr.update(value="", visible=False)]
@@ -457,6 +461,60 @@ def _submit_quiz(questions, *answers):
 
     lines.append(f"\n**Score: {score}/{len(questions)}**")
     return "\n\n".join(lines)
+
+def _get_quiz_pdfs(source_type, notebook_id):
+    if source_type != "PDF":
+        return gr.update(visible=False, choices=[], value=None)
+    if not notebook_id:
+        return gr.update(visible=False, choices=[], value=None)
+    
+    # Search across all users for this notebook_id
+    base = Path("data") / "uploads"
+    pdfs = []
+    if base.exists():
+        for user_dir in base.iterdir():
+            nb_dir = user_dir / str(notebook_id)
+            if nb_dir.exists():
+                pdfs = sorted([p.name for p in nb_dir.glob("*.pdf")])
+                break
+    
+    print(f"DEBUG quiz pdfs found: {pdfs}")
+    return gr.update(visible=True, choices=pdfs, value=pdfs[0] if pdfs else None)
+
+def _quiz_pdf_dropdown_update(source_type, notebook_id, profile: gr.OAuthProfile | None):
+    if source_type != "PDF":
+        return gr.update(visible=False, choices=[], value=None)
+    
+    if not notebook_id:
+        return gr.update(visible=True, choices=[], value=None)
+    
+    user_id = _user_id(profile)
+    
+    # Try with user_id first (production)
+    if user_id:
+        target_dir = Path("data") / "uploads" / user_id / str(notebook_id)
+        if target_dir.exists():
+            pdfs = sorted([p.name for p in target_dir.glob("*.pdf")])
+            return gr.update(visible=True, choices=pdfs, value=pdfs[0] if pdfs else None)
+    
+    # Fallback for local dev (no OAuth): scan all user folders
+    base = Path("data") / "uploads"
+    if base.exists():
+        for user_dir in base.iterdir():
+            if not user_dir.is_dir():
+                continue
+            nb_dir = user_dir / str(notebook_id)
+            if nb_dir.exists():
+                pdfs = sorted([p.name for p in nb_dir.glob("*.pdf")])
+                print(f"DEBUG (local fallback): notebook_id={notebook_id}, pdfs={pdfs}")
+                return gr.update(visible=True, choices=pdfs, value=pdfs[0] if pdfs else None)
+    
+    return gr.update(visible=True, choices=[], value=None)
+
+def _generate_btn_update(source_type, pdf_name):
+    if source_type == "PDF":
+        return gr.update(interactive=bool(pdf_name))
+    return gr.update(interactive=True)
 
 with gr.Blocks(
     title="NotebookLM Clone - Notebooks",
@@ -534,9 +592,6 @@ with gr.Blocks(
 
     status = gr.Markdown("Sign in with Hugging Face to manage notebooks.", elem_classes=["status"])
 
-    demo.load(_initial_load, inputs=None, outputs=[nb_state, selected_notebook_id, status] + row_outputs, api_name=False)
-    demo.load(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd], api_name=False)
-
     # Create button
     create_btn.click(
         _safe_create,
@@ -592,15 +647,6 @@ with gr.Blocks(
             outputs=[nb_state, selected_notebook_id, status] + row_outputs,
             api_name=False,
         ).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
-        def _on_select():
-            return "Selected notebook updated. Use this for chat/ingestion."
-        select_btn.click(
-            _select_notebook,
-            inputs=[gr.State(i), nb_state],
-            outputs=[selected_notebook_id],
-            api_name=False,
-        ).then(_on_select, None, [status]).then(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd])
-
     
     # Text Input Section 
     gr.Markdown("---")
@@ -627,23 +673,35 @@ with gr.Blocks(
    # Quiz Section 
     gr.Markdown("---")
     gr.Markdown("## Generate Quiz")
-    gr.Markdown("Select a source type then generate a quiz.")
 
     quiz_source_type = gr.Radio(
         choices=["Text", "PDF", "URL", "All"],
         value="All",
         label="Source type",
     )
+
+
     quiz_pdf_dd = gr.Dropdown(
-        label="Select PDF",
+        label="Select PDF (select a notebook first if empty)",
         choices=[],
         value=None,
         visible=False,
     )
-    generate_quiz_btn = gr.Button("Generate Quiz", variant="primary")
-    quiz_status = gr.Markdown("")
-    quiz_state = gr.State([])
 
+    demo.load(_initial_load, inputs=None, outputs=[nb_state, selected_notebook_id, status] + row_outputs, api_name=False)
+    demo.load(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd], api_name=False)
+    demo.load(
+        _quiz_pdf_dropdown_update,
+        inputs=[quiz_source_type, selected_notebook_id],
+        outputs=[quiz_pdf_dd],
+        api_name=False,
+    )
+    
+    generate_quiz_btn = gr.Button("Generate Quiz", variant="primary")
+
+    quiz_status = gr.Markdown("")   
+    quiz_state = gr.State([])      
+    
     quiz_components = []
     for i in range(5):
         with gr.Group(visible=False) as q_group:
@@ -655,6 +713,33 @@ with gr.Blocks(
     submit_quiz_btn = gr.Button("Submit Answers", variant="secondary", visible=False)
     quiz_results = gr.Markdown("")
 
+    for i in range(MAX_NOTEBOOKS):
+        select_btn = row_components[i]["select"]
+        def _on_select(i=i):
+            return "Selected notebook updated. Use this for chat/ingestion."
+        
+        select_btn.click(
+            _select_notebook,
+            inputs=[gr.State(i), nb_state],
+            outputs=[selected_notebook_id],
+            api_name=False,
+        ).then(
+            _on_select, None, [status]
+        ).then(
+            _list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd]
+        ).then(
+            _quiz_pdf_dropdown_update,
+            inputs=[quiz_source_type, selected_notebook_id],
+            outputs=[quiz_pdf_dd],
+            api_name=False,
+        ).then(
+            _generate_btn_update,
+            inputs=[quiz_source_type, quiz_pdf_dd],
+            outputs=[generate_quiz_btn],
+            api_name=False,
+        )
+        
+
     submit_btn.click(
         _do_upload,
         inputs=[txt_input, txt_title, selected_notebook_id],
@@ -662,10 +747,25 @@ with gr.Blocks(
     )
 
     quiz_source_type.change(
-        lambda t, nb: _get_notebook_pdfs(nb) if t == "PDF" else gr.update(visible=False, choices=[], value=None),
+        _quiz_pdf_dropdown_update,
         inputs=[quiz_source_type, selected_notebook_id],
         outputs=[quiz_pdf_dd],
+        api_name=False,
+    ).then(
+        _generate_btn_update,
+        inputs=[quiz_source_type, quiz_pdf_dd],
+        outputs=[generate_quiz_btn],
+        api_name=False,
     )
+
+    quiz_pdf_dd.change(
+        _generate_btn_update,
+        inputs=[quiz_source_type, quiz_pdf_dd],
+        outputs=[generate_quiz_btn],
+        api_name=False,
+    )
+
+   
 
     quiz_all_outputs = [quiz_status, quiz_state]
     for c in quiz_components:
@@ -673,6 +773,11 @@ with gr.Blocks(
     quiz_all_outputs += [submit_quiz_btn, quiz_results]
 
     generate_quiz_btn.click(
+    lambda: gr.update(value="Generating quiz..."),
+    inputs=[],
+    outputs=[quiz_status],
+    api_name=False,
+    ).then(
         _generate_quiz,
         inputs=[selected_notebook_id, quiz_source_type, quiz_pdf_dd],
         outputs=quiz_all_outputs,
