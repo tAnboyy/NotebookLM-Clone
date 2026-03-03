@@ -19,7 +19,11 @@ def _get_client() -> InferenceClient:
     global _client
     if _client is None:
         token = os.getenv("HF_TOKEN")
-        _client = InferenceClient(token=token)
+        # Use new HF router (api-inference deprecated)
+        _client = InferenceClient(
+            base_url="https://router.huggingface.co/v1",
+            token=token,
+        )
     return _client
 
 
