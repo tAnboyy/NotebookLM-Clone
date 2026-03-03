@@ -9,8 +9,8 @@ from backend.chat_service import save_message, load_chat
 from backend.retrieval_service import retrieve_chunks
 
 MAX_HISTORY_MESSAGES = 20
-# Groq has free tier - Llama 3.2 3B. Or use :fastest for auto provider.
-DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct:groq"
+# Together AI - you have recent usage. Or :groq for Groq.
+DEFAULT_MODEL = "meta-llama/Llama-3.2-3B-Instruct:together"
 TOP_K = 5
 
 _client: OpenAI | None = None
