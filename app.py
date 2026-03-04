@@ -931,8 +931,6 @@ with gr.Blocks(
         visible=False,
     )
 
-    demo.load(_initial_load, inputs=None, outputs=[nb_state, selected_notebook_id, status] + row_outputs, api_name=False)
-    demo.load(_list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd], api_name=False)
     demo.load(
         _quiz_pdf_dropdown_update,
         inputs=[quiz_source_type, selected_notebook_id],
@@ -955,33 +953,6 @@ with gr.Blocks(
 
     submit_quiz_btn = gr.Button("Submit Answers", variant="secondary", visible=False)
     quiz_results = gr.Markdown("")
-
-    for i in range(MAX_NOTEBOOKS):
-        select_btn = row_components[i]["select"]
-        def _on_select(i=i):
-            return "Selected notebook updated. Use this for chat/ingestion."
-        
-        select_btn.click(
-            _select_notebook,
-            inputs=[gr.State(i), nb_state],
-            outputs=[selected_notebook_id],
-            api_name=False,
-        ).then(
-            _on_select, None, [status]
-        ).then(
-            _list_uploaded_pdfs, inputs=[selected_notebook_id], outputs=[uploaded_pdf_dd]
-        ).then(
-            _quiz_pdf_dropdown_update,
-            inputs=[quiz_source_type, selected_notebook_id],
-            outputs=[quiz_pdf_dd],
-            api_name=False,
-        ).then(
-            _generate_btn_update,
-            inputs=[quiz_source_type, quiz_pdf_dd],
-            outputs=[generate_quiz_btn],
-            api_name=False,
-        )
-        
 
     submit_btn.click(
         _do_upload,
